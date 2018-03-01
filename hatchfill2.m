@@ -3,8 +3,8 @@ function H = hatchfill2(A,varargin)
 %   HATCHFILL2(A) fills the patch(es) with handle(s) A. A can be a vector
 %   of handles or a single handle. If A is a vector, then all objects of A
 %   should be part of the same group for predictable results. The hatch
-%   consists of black lines angled at 45 degrees spaced 5 pixels apart,
-%   with no color filling between the lines.
+%   consists of black lines angled at 45 degrees at 40 hatching lines over
+%   the axis span with no color filling between the lines.
 %
 %   A can be handles of patch or hggroup containing patch objects for
 %   Pre-R2014b release. For HG2 releases, 'bar' and 'contour' objects are
@@ -29,7 +29,7 @@ function H = hatchfill2(A,varargin)
 %      --------------------------------------------------------------------
 %      HatchStyle       Hatching pattern (same effect as STYL argument)
 %      HatchAngle       Angle of hatch lines in degrees (45)
-%      HatchSpacing     Spacing of hatch lines (5)
+%      HatchDensity     Number of hatch lines between axis limits
 %      HatchOffset      Offset hatch lines in pixels (0)
 %      HatchColor       Color of the hatch lines, 'auto' sets it to the
 %                       EdgeColor of A
@@ -42,13 +42,7 @@ function H = hatchfill2(A,varargin)
 %      HatchVisible     [{'auto'}|'on'|'off'] sets visibility of the hatch
 %                       lines. If 'auto', Visibile option is synced to
 %                       underlying patch object
-%      ContourStyle     [{'nonconvex'}|'convex'] sets how hatching is drawn
-%                       for an underlying contour object. If the contour is
-%                       known to be convex, using 'convex' style yields in
-%                       a smaller set of line objects and faster response
-%                       when figure is resized. Incorrect rendering results
-%                       if 'convex' option is used for non-convex contour.
-%                       This option does not affect pre-R2015a releases.
+%      HatchSpacing     (Deprecated) Spacing of hatch lines (5)
 %
 %   In addition, name/value pairs of any properties of A can be specified
 %
@@ -62,8 +56,17 @@ function H = hatchfill2(A,varargin)
 %       Speckled region:
 %       hatchfill2(a,'speckle','HatchAngle',7,'HatchSpacing',1);
 
-% Copyright 2015-2016 Takeshi Ikuma
+% Copyright 2015-2018 Takeshi Ikuma
 % History:
+% rev. 7 : (01-10-2018)
+%   * Added support for 3D faces
+%   * Removed HatchSpacing option
+%   * Added HatchDensity option
+%   * Hatching is no longer defined w.r.t. pixels. HatchDensity is defined
+%     as the number of hatch lines across an axis limit. As a result,
+%     HatchAngle no longer is the actual hatch angle though it should be
+%     close.
+%   * [known bug] Speckle hatching style is not working
 % rev. 6 : (07-17-2016)
 %   * Fixed contours object hatching behavior, introduced in rev.5
 %   * Added ContourStyle option to enable fast drawing if contour is convex
@@ -86,7 +89,7 @@ function H = hatchfill2(A,varargin)
 %   * Fixed HG2 contour color extraction bug
 %   * A few cosmetic changes here and there
 % rev. - : (10-19-2015) original release
-%   * This work is based on Neil Tandon's hatchfill submission 
+%   * This work is based on Neil Tandon's hatchfill submission
 %     (http://www.mathworks.com/matlabcentral/fileexchange/30733)
 %     and borrowed code therein from R. Pawlowicz, K. Pankratov, and
 %     Iram Weinstein.
@@ -94,16 +97,15 @@ function H = hatchfill2(A,varargin)
 narginchk(1,inf);
 [A,opts,props] = parse_input(A,varargin);
 
-if verLessThan('matlab','8.4')
-   H = zeros(size(A));
-else
-   H = repmat(matlab.graphics.GraphicsPlaceholder,size(A));
-end
-
 drawnow % make sure the base objects are already drawn
 
+if verLessThan('matlab','8.4')
+   H = cell(1,numel(A));
+else
+   H = repmat({matlab.graphics.GraphicsPlaceholder},1,numel(A));
+end
 for n = 1:numel(A)
-   H(n) = newhatch(A(n),opts,props);
+   H{n} = newhatch(A(n),opts,props);
    
    % if legend of A(n) is shown, add hatching to it as well
    %    leg = handle(legend(ancestor(A,'axes')));
@@ -117,6 +119,13 @@ end
 
 if nargout==0
    clear H
+else
+   H = [H{:}];
+   if numel(H)==numel(A)
+      H = reshape(H,size(A));
+   else
+      H = H(:);
+   end
 end
 
 end
@@ -131,35 +140,76 @@ function H = newhatch(A,opts,props)
 % 5. convert xdata & ydata back to data units
 % 6. plot the hatching line
 
+% traverse if hggroup/hgtransform
+if ishghandle(A,'hggroup')
+   if verLessThan('matlab','8.4')
+      H = cell(1,numel(A));
+   else
+      H = repmat({matlab.graphics.GraphicsPlaceholder},1,numel(A));
+   end
+   
+   for n = 1:numel(A.Children)
+      try
+         H{n} = newhatch(A.Children(n),opts,props);
+      catch
+      end
+   end
+   
+   H = [H{:}];
+   return;
+end
+
 % Modify the base object property if given
 if ~isempty(props)
    pvalold = sethgprops(A,props);
 end
 
 try
-   % save the current patch object data
-   hgdatachanged(A);
-   
-   % 0-5: form hatch line data
-   [X,Y,proplist] = getlinedata(A,opts);
-   
-   % 6. plot the hatching line
-   [color,cprop] = gethgcolor(A);
-   if ~strcmp(opts.HatchColor,'auto')
-      color = opts.HatchColor;
-   end
    vislisena = strcmp(opts.HatchVisible,'auto');
    if vislisena
       vis = A.Visible;
    else
       vis = opts.HatchVisible;
    end
-   commonprops = {'Color',color,'Parent',A.Parent,'DisplayName',A.DisplayName,'Visible',vis};
+
+   redraw = strcmp(A.Visible,'off') && ~vislisena;
+   if redraw
+      A.Visible = 'on'; % momentarily make the patch visible
+      drawnow;
+   end
+   
+   % get the base object's vertices & faces
+   [V,F,FillFcns] = gethgdata(A); % object does not have its patch data ready
+   
+   if redraw
+      A.Visible = 'off'; % momentarily make the patch visible
+   end
+   
+   if ~isempty(FillFcns)
+      FillFcns{1}();
+      drawnow;
+      [V,F] = gethgdata(A); % object does not have its patch data ready
+      FillFcns{2}();
+      drawnow;
+   end
+   
+   % recompute hatch line data
+   [X,Y,Z] = computeHatchData(handle(ancestor(A,'axes')),V,F,opts);
+   
+   % 6. plot the hatching line
+   commonprops = {'Parent',A.Parent,'DisplayName',A.DisplayName,'Visible',vis};
+   if ~strcmp(opts.HatchColor,'auto')
+      commonprops = [commonprops {'Color',opts.HatchColor,'MarkerFaceColor',opts.HatchColor}];
+   end
    if isempty(regexp(opts.HatchStyle,'speckle$','once'))
-      H = line(X,Y,commonprops{:},'LineStyle',opts.HatchLineStyle','LineWidth',opts.HatchLineWidth);
+      H = line(X,Y,Z,commonprops{:},'LineStyle',opts.HatchLineStyle','LineWidth',opts.HatchLineWidth);
    else
-      H = line(X,Y,commonprops{:},'LineStyle','none','Marker',opts.SpeckleMarkerStyle,...
-         'MarkerSize',opts.SpeckleSize,'MarkerFaceColor',opts.HatchColor,'Parent',A.Parent,'DisplayName',A.DisplayName);
+      H = line(X,Y,Z,commonprops{:},'LineStyle','none','Marker',opts.SpeckleMarkerStyle,...
+         'MarkerSize',opts.SpeckleSize,'Parent',A.Parent,'DisplayName',A.DisplayName);
+   end
+   
+   if strcmp(opts.HatchColor,'auto')
+      syncColor(H,A);
    end
    
    if isempty(H)
@@ -172,64 +222,38 @@ try
    [~,idx] = ismember(A,Hcs); % always idx(1)>idx(2) as H was just created
    p.Children = p.Children([2:idx-1 1 idx:end]);
    
+   % if HG1, all done | no dynamic adjustment support
+   if verLessThan('matlab','8.4')
+      return;
+   end
+   
    % save the config data & set up the object listeners
-   setappdata(A,'HatchFill2Opts',opts);
-   setappdata(A,'HatchFill2Obj',handle(H));
-   setappdata(H,'HatchFill2Patch',A);
-   
-   % create a function to be called when a legend is inserted 
-   % (for flexlegend?)
-   
-   setappdata(A,'LegendEntryFormatFcn',@(h)hatchfill2(h,opts));
+   setappdata(A,'HatchFill2Opts',opts); % hatching options
+   setappdata(A,'HatchFill2Obj',H); % hatching line object
+   setappdata(A,'HatchFill2LastData',{V,F}); % last patch data
+   setappdata(A,'HatchFill2LastVisible',A.Visible); % last sensitive properties
+   setappdata(A,'HatchFill2PostMarkedClean',{}); % run this function at the end of the MarkClean callback and set NoAction flag
+   setappdata(A,'HatchFill2NoAction',false); % no action during next MarkClean callback, callback only clears this flag
+   setappdata(H,'HatchFill2MatchVisible',vislisena);
+   setappdata(H,'HatchFill2MatchColor',strcmp(opts.HatchColor,'auto'));
+   setappdata(H,'HatchFill2Patch',A); % base object
    
    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
    % Create listeners for active formatting
    
-   addlistener(H,'ObjectBeingDestroyed',@hatchcleanup);
-
-   if verLessThan('matlab','8.4')
-      lis = addlistener(A,'ObjectParentChanged',@reparent);
-   else
-      lis = addlistener(A,'Reparent',@reparent);
-   end
-   lis(2) = addlistener(A,'ObjectBeingDestroyed',@cleanup);
-   lis(3) = addlistener(A,'Clipping','PostSet',@syncProperty);
-   lis(4) = addlistener(A,'HitTest','PostSet',@syncProperty);
-   lis(5) = addlistener(A,'Interruptible','PostSet',@syncProperty);
-   lis(6) = addlistener(A,'BusyAction','PostSet',@syncProperty);
-   lis(7) = addlistener(A,'UIContextMenu','PostSet',@syncProperty);
+   addlistener(H,'ObjectBeingDestroyed',@hatchBeingDeleted);
    
-   % properties requiring rehatching the patch
-   for n = 1:size(proplist,1)
-      for m = 1:size(proplist{n,2},1)
-         lis(end+1) = addlistener(proplist{n,1},proplist{n,2}{m,:},@rehatch); %#ok
-      end
-   end
-   setappdata(A,'HatchFill2Listeners',lis);
-
-   % properties to be synced
-   lis = addlistener(A,'Visible','PostSet',@syncProperty);
-   setappdata(A,'HatchFill2PostSetVisible',lis);
-   if ~vislisena
-      try
-         lis.Enabled = false;
-      catch
-         set(lis,'Enabled','off');
-      end
-   end
+   lis = [
+      addlistener(A,'Reparent',@objReparent)
+      addlistener(A,'ObjectBeingDestroyed',@objBeingDeleted);
+      addlistener(A,'MarkedClean',@objMarkedClean)
+      addlistener(A,'LegendEntryDirty',@(h,evt)[])]; % <- study this later
    
-   lis = addlistener(cprop{1},cprop{2},'PostSet',@recolor);
-   setappdata(A,'HatchFill2PostSetColor',lis);
-   if ~strcmp(opts.HatchColor,'auto')
-      try
-         lis(end).Enabled = false;
-      catch
-         set(lis(end),'Enabled','off');
-      end
+   syncprops = {'Clipping','HitTest','Interruptible','BusyAction','UIContextMenu'};
+   syncprops(~cellfun(@(p)isprop(A,p),syncprops)) = [];
+   for n = 1:numel(syncprops)
+      lis(n+2) = addlistener(A,syncprops{n},'PostSet',@syncProperty);
    end
-   
-   % set up the axes listeners
-   axessetup(A);
    
 catch ME
    % something went wrong, restore the base object properties
@@ -250,113 +274,116 @@ end
 end
 
 %%%%%%%%%% EVENT CALLBACK FUNCTIONS %%%%%%%%%%%%
+% Base Object's listeners
+% objReparent - also move the hatch object
+% ObjectingBeingDestroyed - also destroy the hatch object
+% MarkedClean - match color if HatchColor = 'auto'
+%             - check if vertex & face changed; if so redraw hatch
+%             - check if hatch redraw triggered the event due to object's
+%               face not shown; if so clear the flag
 
-function recolor(hp,evt)
+function objMarkedClean(hp,~)
+% CALLBACK for base object's MarkedClean event
+% check: visibility change, hatching area change, & color change
 
-try % for HG1 callback
-   hp = evt.AffectedObject;
-catch
+if getappdata(hp,'HatchFill2NoAction')
+   setappdata(A,'HatchFill2NoAction',false);
+   return;
 end
 
 % get the main patch object (loops if hggroup or HG2 objects)
-while ~isappdata(hp,'HatchFill2Obj')
-   hp = handle(hp.Parent);
-end
 H = getappdata(hp,'HatchFill2Obj');
 
-% sync the color
-H.Color = gethgcolor(hp);
-
-end
-
-function rehatch(hp,evt)
-
-if ~ishghandle(hp) % for HG1 callback
-   hp = evt.AffectedObject;
-end
-
-try
-   axchanged = ishghandle(evt.Source,'axes');
-catch
-   axchanged = ishghandle(evt.Source,'axes');
-end
-
-% get the main patch object (loops if hggroup or HG2 objects)
-while ~isappdata(hp,'HatchFill2Obj')
-   hp = handle(hp.Parent);
-end
-
-% if no change since last time, don't do anything
-if axchanged || hgdatachanged(hp)
-   % get the hatch line object handle & hatching options
-   H = getappdata(hp,'HatchFill2Obj');
-   opts = getappdata(hp,'HatchFill2Opts');
-   
-   % recompute hatch line data
-   [X,Y] = getlinedata(hp,opts);
-   
-   % update the hatching line data 
-   if ~isempty(X) || hgdatachanged(hp) % undesirable workaround
-      set(H,'XData',X,'YData',Y);
+rehatch = ~strcmp(hp.Visible,getappdata(hp,'HatchFill2LastVisible'));
+if rehatch % if visibility changed
+   setappdata(hp,'HatchFill2LastVisible',hp.Visible);
+   if strcmp(hp.Visible,'off') % if made hidden, hide hatching as well
+      if getappdata(H,'HatchFill2MatchVisible')
+         H.Visible = 'off';
+         return; % nothing else to do
+      end
    end
+end
+
+% get the patch data
+[V,F,FillFcns] = gethgdata(hp);
+if ~isempty(FillFcns) % patch does not exist, must momentarily generate it
+   FillFcns{1}();
+   setappdata(A,'HatchFill2PostMarkedClean',FillFcns{2});
+   return;
+end
+if ~rehatch % if visible already 'on', check for the change in object data
+   VFlast = getappdata(hp,'HatchFill2LastData');
+   rehatch = ~isequaln(F,VFlast{2}) || ~isequaln(V,VFlast{1});
+end
+
+% rehatch if patch data/visibility changed
+if rehatch 
+   % recompute hatch line data
+   [X,Y,Z] = computeHatchData(ancestor(H,'axes'),V,F,getappdata(hp,'HatchFill2Opts'));
+   
+   % update the hatching line data
+   set(H,'XData',X,'YData',Y,'ZData',Z);
+
+   % save patch data
+   setappdata(hp,'HatchFill2LastData',{V,F});
+end
+
+% sync the color
+syncColor(H,hp);
+
+% run post callback if specified (expect it to trigger another MarkedClean
+% event immediately)
+fcn = getappdata(hp,'HatchFill2PostMarkedClean');
+if ~isempty(fcn)
+   setappdata(hp,'HatchFill2PostMarkedClean',function_handle.empty);
+   setappdata(hp,'HatchFill2NoAction',true);
+   fcn();
+   return;
 end
 
 end
 
 function syncProperty(~,evt)
-   % sync Visible property to the patch object
-   hp = handle(evt.AffectedObject); % patch object
-   hh = getappdata(hp,'HatchFill2Obj');
-   hh.(evt.Source.Name) = hp.(evt.Source.Name);
+% sync Visible property to the patch object
+hp = handle(evt.AffectedObject); % patch object
+hh = getappdata(hp,'HatchFill2Obj');
+hh.(evt.Source.Name) = hp.(evt.Source.Name);
 end
 
-function reparent(hp,evt)
-%reparent event listener callback
+function objReparent(hp,evt)
+%objReparent event listener callback
 
-try % HG2
-   pnew = evt.NewValue;
-   pold = evt.OldValue;
-catch % HG1
-   pnew = handle(evt.NewParent);
-   pold = handle(evt.OldParent);
-end
-axnew = handle(ancestor(pnew,'axes'));
-axold = handle(ancestor(pold,'axes'));
-
-% if truely moved, move the hatch line object over as well
-if ~(isempty(pnew) || isempty(pold) || pnew==pold)
-   H = getappdata(hp,'HatchFill2Obj');
-   H.Parent = pnew;
-
-   % make sure to move the hatch line object right above the patch object
-   Hcs = handle(pnew.Children);
-   [~,idx] = ismember(hp,Hcs); % always idx(1)>idx(2) as H was just moved
-   pnew.Children = pnew.Children([2:idx-1 1 idx:end]);
-end
- 
-% if still on the same axes, nothing to do
-if ~(isempty(axnew) || isempty(axold) || axnew==axold)
-   
-   % remove the association to the old axes
-   axescleanup(axold,hp);
-   % associate with the new axes
-   axessetup(axnew,hp);
+pnew = evt.NewValue;
+if isempty(pnew)
+   return; % no change?
 end
 
-end
-function cleanup(hp,~)
-%when patch object (hp) is deleted
+% move the hatch line object over as well
+H = getappdata(hp,'HatchFill2Obj');
+H.Parent = pnew;
 
-hatchcleanup(getappdata(hp,'HatchFill2Obj'))
+% make sure to move the hatch line object right above the patch object
+Hcs = handle(pnew.Children);
+[~,idx] = ismember(hp,Hcs); % always idx(1)>idx(2) as H was just moved
+pnew.Children = pnew.Children([2:idx-1 1 idx:end]);
+
+end
+
+function objBeingDeleted(hp,~)
+%when base object is deleted
 
 if isappdata(hp,'HatchFill2Obj')
-   delete(getappdata(hp,'HatchFill2Obj'));
-   rmappdata(hp,'HatchFill2Obj');
+   H = getappdata(hp,'HatchFill2Obj');
+   try % in case H is already deleted
+   delete(H);
+   catch
+   end
 end
 
 end
 
-function hatchcleanup(hh,~)
+function hatchBeingDeleted(hh,~)
 %when hatch line object (hh) is deleted
 
 if isappdata(hh,'HatchFill2Patch')
@@ -368,295 +395,57 @@ if isappdata(hh,'HatchFill2Patch')
       delete(getappdata(hp,'HatchFill2Listeners'));
       rmappdata(hp,'HatchFill2Listeners');
    end
-   if isappdata(hp,'HatchFill2PostSetVisible')
-      delete(getappdata(hp,'HatchFill2PostSetVisible'));
-      rmappdata(hp,'HatchFill2PostSetVisible');
-   end
-   if isappdata(hp,'HatchFill2PostSetColor')
-      delete(getappdata(hp,'HatchFill2PostSetColor'));
-      rmappdata(hp,'HatchFill2PostSetColor');
-   end
-   
-   % remove the patch object from axes lookout
-   axescleanup(handle(ancestor(hp,'axes')),hp);
-end
-
-end
-
-function axesresize(ax,evt)
-% listener callback for the axes containing lateximage objects
-
-try % for HG1 callback
-   ax = evt.AffectedObject;
-   if ~axesresized(ax)
-      return;
-   end
-catch
-end
-
-hs = getappdata(ax,'HatchFill2Handles');
-for h = hs % for each latex image object, rescale
-   rehatch(h,evt);
-end
-
-end
-
-function axesredraw(ax,evt)
-% listener callback for the axes containing lateximage objects
-
-try % for HG1 callback
-   ax = evt.AffectedObject;
-catch
-end
-
-if axeschanged(ax)
-   hs = getappdata(ax,'HatchFill2Handles');
-   for h = hs % for each latex image object, rescale
-      rehatch(h,evt);
-   end
-end
-
-end
-
-function axescleanup(ax,h)
-% called when h is deleted or moved to another parent
-
-% update its lateximage handles
-hs = setdiff(getappdata(ax,'HatchFill2Handles'),h);
-setappdata(ax,'HatchFill2Handles',hs);
-
-if isempty(hs) % delete all listeners
-   % remove from figure's axes list
-   framecleanup(handle(ax.Parent),ax);
-   
-   % delete all axes listeners
-   lis = getappdata(ax,'HatchFill2OnSizeChanged');
-   if ~isempty(lis)
-      delete(lis);
-      rmappdata(ax,'HatchFill2OnSizeChanged');
-   end
-   lis = getappdata(ax,'HatchFill2OnMarkedClean');
-   if ~isempty(lis)
-      delete(lis);
-      rmappdata(ax,'HatchFill2OnMarkedClean');
-   end
-   
-   if isappdata(ax,'HatchFill2AxesPosition')
-      rmappdata(ax,'HatchFill2AxesPosition');
-   end
-   if isappdata(ax,'HatchFill2AxesStates')
-      rmappdata(ax,'HatchFill2AxesStates');
-   end
-   
-   % delete misc appdata
-   if isappdata(ax,'TIPrintMode')
-      rmappdata(ax,'TIPrintMode');
-   end
-   
-end
-end
-
-function frameredraw(fig,evt)
-% in HG1, if figure/frame has been resized, pass the command down
-
-try
-   fig = evt.AffectedObject;
-catch
-end
-
-hs = getappdata(fig,'HatchFill2Axes');
-for n = 1:numel(hs)
-   if ishghandle(hs(n),'axes')
-      axesresize(hs(n),evt)
-   else
-      frameredraw(hs(n));
-   end
-end
-end
-
-function framecleanup(fig,ax)
-% called when h is deleted or moved to another parent
-
-% update its lateximage handles
-hs = setdiff(getappdata(fig,'HatchFill2Axes'),ax);
-setappdata(fig,'HatchFill2Axes',hs);
-
-if isempty(hs) % delete all listeners
-
-   % delete the Position listeners
-   lis = getappdata(fig,'HatchFill2FigureSize');
-   if ~isempty(lis)
-      delete(lis);
-      rmappdata(fig,'HatchFill2FigureSize');
-   end
-   
-   % remove from figure's axes list
-   p = fig.Parent;
-   if p>0
-      framecleanup(handle(p),fig);
-   end
-end
-end
-
-%%%%%%%%%% SUBFUNCTIONS %%%%%%%%%%%%
-
-function axessetup(h)
-
-ax = handle(ancestor(h,'axes'));
-
-hs = getappdata(ax,'HatchFill2Handles');
-if isempty(hs) % first time
-   % create appdata
-   setappdata(ax,'HatchFill2Handles',h);
-   
-   % store current position in pixels
-   u = ax.Units;
-   ax.Units = 'pixels';
-   pos = ax.Position;
-   ax.Units = u;
-   setappdata(ax,'HatchFill2AxesPosition',pos);
-
-   % store current state
-   pnames = {...
-      'XLim','XDir','XScale',...
-      'YLim','YDir','YScale',...
-      'ZLim','ZDir','ZScale',...
-      'DataAspectRatio','PlotBoxAspectRatio'};
-   states = [pnames;get(ax,pnames)];
-   setappdata(ax,'HatchFill2AxesStates',states);
-   
-   % set up new listeners
-   if verLessThan('matlab','8.4')
-      setappdata(ax,'HatchFill2OnSizeChanged',[...
-         addlistener(ax,'Position','PostSet',@axesredraw)...
-         addlistener(ax,'Parent','PostSet',@axesredraw)]);
-      
-      for n = 1:numel(pnames)
-         lis(n) = addlistener(ax,pnames{n},'PostSet',@axesredraw); %#ok
-      end
-      setappdata(ax,'HatchFill2OnMarkedClean',lis);
-      
-      % also need to monitor figure's Position
-      framesetup(handle(ax.Parent),ax);
-   else
-      setappdata(ax,'HatchFill2OnSizeChanged',addlistener(ax,'SizeChanged',@axesresize));
-      setappdata(ax,'HatchFill2OnMarkedClean',addlistener(ax,'MarkedClean',@axesresize));
-   end
-else % already exists
-   % add the new object to the appdata
-   setappdata(ax,'HatchFill2Handles',[hs h]);
-end
-end
-
-function framesetup(fig,ax)
-% only for HG1
-
-hs = getappdata(fig,'HatchFill2Axes');
-if isempty(hs)
-   % create appdata
-   setappdata(fig,'HatchFill2Axes',ax);
-   
-   % set up new listeners
-   setappdata(fig,'HatchFill2FigureSize',...
-      addlistener(fig,'Position','PostSet',@frameredraw));
-   
-   % recurse until it is figure
-   p = fig.Parent;
-   if p~=0 % not root
-      framesetup(handle(p),fig);
-   end
-else % already exists
-   % add the new object to the appdata
-   setappdata(fig,'HatchFill2Axes',[hs ax]);
 end
 
 end
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-function varargout = getlinedata(A,opts)
-
-ax = handle(ancestor(A,'axes'));
+function varargout = computeHatchData(ax,V,F,opts)
 
 varargout = cell(1,nargout);
 
-% 0. retrieve pixel-data conversion parameters
-[x2px,y2px,islog,xlim,ylim] = data2pxratio(ax);
+if isempty(V) % if patch shown
+   return;
+end
 
-% 1. retrieve face & vertex matrices from A
-[V,F,varargout{3:end}] = gethgdata(A,opts.ContourStyle);
-
-if ~isempty(V) % if patch shown
-   % 2. convert vertex matrix from data to pixels units
-   [V(:,1),V(:,2)] = data2px(ax,V(:,1),V(:,2),x2px,y2px,islog,xlim,ylim);
+N = size(F,1);
+XYZc = cell(2,N);
+for n = 1:N % for each face
    
-   % 3. get xdata & ydata of hatching lines for each face
-   N = size(F,1);
-   XYc = cell(2,N);
-   for n = 1:N
-      f = F(n,:);
-      %%% just-in-case %%%
-      f(isnan(f)) = [];
-      v = V(f,1:2)';
-      v(:,any(isnan(v)|isinf(v))) = []; % remove nan or inf samples
-      %%% /just-in-case %%%
-      if any(strcmp(opts.HatchStyle,{'speckle','outsidespeckle'}))
-         XYc{1,n} = hatch_xy(v,opts.HatchStyle,opts.SpeckleWidth,opts.SpeckleDensity,opts.HatchOffset);
-      else
-         XYc{1,n} = hatch_xy(v,opts.HatchStyle,opts.HatchAngle,opts.HatchSpacing,opts.HatchOffset);
-      end
+   % 2. get xdata & ydata of the vertices of the face in transformed bases
+   f = F(n,:); % get indices to the vertices of the face
+   f(isnan(f)) = [];
+   
+   [v,T,islog] = transform_data(ax,V(f,:),[]); % transform the face
+   if isempty(v) % face is not hatchable
+      continue;
    end
    
-   % 4. concatenate hatch lines across faces sandwitching nan's in between
-   [XYc{2,:}] = deal(nan(2,1));
-   XY = cat(2,XYc{:});
+   % 2. get xdata & ydata of hatching lines for each face
+   if any(strcmp(opts.HatchStyle,{'speckle','outsidespeckle'}))
+      xy = hatch_xy(v.',opts.HatchStyle,opts.SpeckleWidth,opts.SpeckleDensity,opts.HatchOffset);
+   else
+      xy = hatch_xy(v.',opts.HatchStyle,opts.HatchAngle,opts.HatchDensity,opts.HatchOffset);
+   end
    
-   % 5. convert xdata & ydata back to data units
-   [varargout{1:2}] = px2data(ax,XY(1,:),XY(2,:),x2px,y2px,islog,xlim,ylim);
+   % 3. revert the bases back to 3D Eucledian space
+   XYZc{1,n} = revert_data(xy',T,islog).';
 end
 
-end
+% 4. concatenate hatch lines across faces sandwitching nan's in between
+[XYZc{2,:}] = deal(nan(3,1));
+XYZ = cat(2,XYZc{:});
 
-function tf = axesresized(ax)
-% returns true if any of the axes' Position property (in pixels) is changed
-% only called by HG1 listeners
-
-lis = getappdata(ax,'HatchFill2OnSizeChanged');
-set(lis,'Enabled','off');
-u = ax.Units;
-ax.Units = 'pixels';
-newpos = ax.Position;
-ax.Units = u;
-set(lis,'Enabled','on');
-
-oldpos = getappdata(ax,'HatchFill2AxesPosition');
-tf = newpos(3)~=oldpos(3) || newpos(4)~=oldpos(4);
-if tf
-   getappdata(ax,'HatchFill2AxesPosition',newpos);
-end
-
-end
-
-function tf = axeschanged(ax)
-% returns true if any of the following axes' property has changed: XYZLim,
-% XYZScale, XYZLim, DataAspectRatio, PlotBoxAspectRatio, Position (in
-% pixels)
-
-oldstates = getappdata(ax,'HatchFill2AxesStates');
-newstates = get(ax,oldstates(1,:));
-
-tf = ~isequal(oldstates(2,:),newstates);
-if tf
-   oldstates(2,:) = newstates;
-   setappdata(ax,'HatchFill2AxesStates',oldstates);
-end
+% 5. convert xdata & ydata back to data units
+[varargout{1:3}] = deal(XYZ(1,:),XYZ(2,:),XYZ(3,:));
 
 end
 
 function tf = issupported(hbase)
 % check if all of the given base objects are supported
 
-supported_objtypes = {'patch','hggroup','bar','contour','area'};
+supported_objtypes = {'patch','hggroup','bar','contour','area','surface','histogram'};
 
 if isempty(hbase)
    tf = false;
@@ -670,269 +459,168 @@ end
 
 end
 
-function varargout = gethgcolor(A)
+% synchronize hatching line color to the patch's edge color if HatchColor =
+% 'auto'
+function syncColor(H,A)
 
-varargout = cell(1,nargout);
-
-if ishghandle(A,'hggroup')
-   % get all supported child objects
-   hs = handle(A.Children);
-   hs(~issupported(hs)) = [];
-   
-   % grab the color of the first object
-   for n = 1:numel(hs)
-      [varargout{:}] = gethgcolor(hs(n));
-      if ~isempty(varargout{1})
-         break;
-      end
-   end
-else
-   if ishghandle(A,'patch') || ishghandle(A,'Bar') || ishghandle(A,'area') %HG2
-      pname = 'EdgeColor';
-   elseif ishghandle(A,'contour') % HG2
-      pname = 'LineColor';
-   end
-   varargout{1} = A.(pname);
-   if strcmp(varargout{1},'flat')
-      try
-         varargout{1} = double(A.Edge.ColorData(1:3)')/255;
-      catch
-         warning('Unknown patch edge color found');
-         varargout{1} = 'k';
-      end
-   end
-   if nargout>1
-      varargout{2} = {A pname};
-   end
-end
+if ~getappdata(H,'HatchFill2MatchColor')
+   % do not sync
+   return;
 end
 
-function tf = hgdatachanged(A)
-
-data = getappdata(A,'HatchFill2Data');
-tf = isempty(data);
-
-if ishghandle(A,'hggroup')
-   % get all supported child objects
-   hs = handle(A.Children);
-   hs(~issupported(hs)) = [];
-   
-   % grab the color of the first object
-   for n = 1:numel(hs)
-      tf = tf || hgdatachanged(hs(n));
-   end
-else
-   if ishghandle(A,'patch')
-      pnames = {'Vertices','Faces'};
-   elseif ishghandle(A,'bar') % HG2
-      pnames = {'BarWidth','BaseValue','Horizontal','XData','YData'};
-   elseif ishghandle(A,'contour') % HG2
-      pnames = {'XData','YData','ZData','LevelList','LevelStep'};
-   elseif ishghandle(A,'area') % HG2
-      pnames = {'XData','YData','BaseValue'};
-   elseif ishghandle(A,'histogram') %HG2
-   end
-
-   % if running for the first time, initialize the appdata
-   if tf
-      data = cell(1,numel(pnames));
-   end
-   
-   % check for any change
-   for n = 1:numel(pnames)
-      if ~isequal(A.(pnames{n}),data{n});
-         tf = true;
-         data{n} = A.(pnames{n});
-      end
-   end
-   
-   % if something changed, updated the appdata
-   if tf
-      setappdata(A,'HatchFill2Data',data);
+if ishghandle(A,'patch') || ishghandle(A,'Bar') || ishghandle(A,'area') ...
+      || ishghandle(A,'surface') || ishghandle(A,'Histogram') %HG2
+   pname = 'EdgeColor';
+elseif ishghandle(A,'contour') % HG2
+   pname = 'LineColor';
+end
+color = A.(pname);
+if strcmp(color,'flat')
+   try
+      color = double(A.Edge(1).ColorData(1:3)')/255;
+   catch
+      warning('Does not support CData based edge color.');
+      color = 'k';
    end
 end
+H.Color = color;
+H.MarkerFaceColor = color;
 
 end
 
-function [V,F,listner_cfg] = gethgdata(A,cstyle)
+function [V,F,FillFcns] = gethgdata(A)
+% Get vertices & face data from the object along with the critical
+% properties to observe change in the hatching area
+
+% initialize the output variable
+F = [];
+V = [];
+FillFcns = {};
+
+if ~isvalid(A) || strcmp(A.Visible,'off')
+   return;
+end
 
 if ishghandle(A,'patch')
    V = A.Vertices;
    F = A.Faces;
-   
-   % return addlister input arguments (minus the callback)
-   if nargout>2
-      listner_cfg = {A {'Vertices' 'PostSet';'Faces' 'PostSet'}};
+elseif ishghandle(A,'bar')
+   [V,F] = getQuadrilateralData(A.Face);
+elseif ishghandle(A,'area')
+   [V,F] = getTriangleStripData(A.Face);
+   set(A,'FaceColor','none');
+elseif ishghandle(A,'surface') % HG2
+   if strcmp(A.FaceColor,'none')
+      FillFcns = {@()set(A,'FaceColor','w'),@()set(A,'FaceColor','none')};
+      return;
    end
-elseif ishghandle(A,'bar') || ishghandle(A,'area') % HG2
-   if isempty(A.Face)
-      F = [];
-      V = [];
-   else
-      % A.Face is a hidden property holding underlying Quadrilateral object
-      V = A.Face.VertexData';
-      I = double(A.Face.StripData);
-      N = numel(I)-1; % # of faces
-      m = diff(I);
-      M = max(m);
-      F = nan(N,M);
-      for n = 1:N
-         idx = I(n):(I(n+1)-1);
-         if mod(numel(idx),2) % odd
-            error('Unaccounted Quadrilateral face: odd number of vertices');
-            %idx(:) = idx([1:2:end end-1:-2:2]);
-         else % even
-            idx(:) = idx([1:2:end-1 end:-2:2]);
-         end
-         F(n,1:numel(idx)) = idx;
-      end
-   end
-   % return addlister input arguments (minus the callback)
-   if nargout>2
-      listner_cfg = {A {'MarkedClean'}};
-   end
+   [V,F] = getQuadrilateralData(A.Face);
 elseif ishghandle(A,'contour') % HG2
-   % return addlister input arguments (minus the callback)
-   if nargout>2
-      listner_cfg = {A {'MarkedClean'}};
-   end
-
-   if strcmp(A.Fill,'off')
-      A.Fill = 'on';
-%       drawnow;
-      refreshdata(A)
-      C = onCleanup(@()set(A,'Fill','off'));
-   end
    
    % Retrieve data from hidden FacePrims property (a TriangleStrip object)
-   if ~isempty(A.ContourMatrix) && (strcmp(cstyle,'convex') || isempty(A.FacePrims))
-      % CODE FOR THIS SECTION IS BORROWED FROM CONTOURCS (#28447)
-      
-      data = A.ContourMatrix;
-      
-      % Count number of contour segments found (K)
-      K = 0;
-      n0 = 1;
-      maxV = 0;
-      while n0<=size(data,2)
-         K = K + 1;
-         Nv = data(2,n0);
-         maxV = max(maxV,Nv);
-         n0 = n0 + Nv + 1;
-      end
-      
-      % create F & V output matrices
-      V = zeros(K*maxV,2);
-      F = nan(K,maxV);
-      % fill the output struct
-      n0 = 1;
-      for k = 1:K
-         idx = (n0+1):(n0+data(2,n0));
-         V(idx,:) = data(:,idx)';
-         F(k,1:data(2,n0)) = idx;
-         n0 = idx(end) + 1; % next starting index
-      end
-   elseif ~isempty(A.FacePrims)
-      V = A.FacePrims.VertexData';
-      I = double(A.FacePrims.StripData);
-      
-      % hack job here: in log scale, V is normalized to the axes
-      % no idea how to pick this up from A itself...
-      ax = ancestor(A,'axes');
-      inlog = strcmp({ax.XScale ax.YScale},'log');
-      if any(inlog)
-         xlim = ax.XLim; ylim = ax.YLim;
-         if inlog(1)
-            xlim(:) = log10(xlim);
-         end
-         V(:,1) = V(:,1)*diff(xlim);
-         if strcmp(ax.XDir,'normal')
-            V(:,1) = V(:,1) + xlim(1);
-         else
-            V(:,1) = xlim(2) - V(:,1);
-         end
-         if inlog(1)
-            V(:,1) = 10.^V(:,1);
-         end
-         
-         if inlog(2)
-            ylim(:) = log10(ylim);
-         end
-         V(:,2) = V(:,2)*diff(ylim);
-         if strcmp(ax.YDir,'normal')
-            V(:,2) = V(:,2) + ylim(1);
-         else
-            V(:,2) = ylim(2) - V(:,2);
-         end
-         if inlog(2)
-            V(:,2) = 10.^V(:,2);
-         end
-      end
-      
-      N = numel(I)-1; % # of faces
-      m = diff(I);
-      M = max(m);
-      F = nan(N,M);
-      for n = 1:N
-         idx = I(n):(I(n+1)-1);
-         if mod(numel(idx),2) % odd
-            idx(:) = idx([1:2:end end-1:-2:2]);
-         else % even
-            idx(:) = idx([1:2:end-1 end:-2:2]);
-         end
-         F(n,1:numel(idx)) = idx;
-      end
-   else
-      F = [];
-      V = [];
-      warning('Failed to find the data of the Contour object A.');
+   if strcmp(A.Fill,'off')
+      FillFcns = {@()set(A,'Fill','on'),@()set(A,'Fill','off')};
+      return;
    end
-elseif ishghandle(A,'histogram') %HG2
-else%if ishghandle(A,'hggroup')
-   % get all supported child objects
-   hs = handle(A.Children);
-   hs(~issupported(hs)) = [];
+   [V,F] = getTriangleStripData(A.FacePrims);
+elseif ishghandle(A,'histogram') %HG2: Quadrateral underlying data object
+   [V,F] = getQuadrilateralData(A.NodeChildren(4));
+end
 
-   % return addlister input arguments (minus the callback)
-   if nargout>2
-      listner_cfg = cell(0,2);
+end
+
+function [V,F] = getQuadrilateralData(A) % surface, bar, histogram,
+
+if isempty(A)
+   warning('Cannot hatch the face: Graphics object''s face is not defined.');
+   V = [];
+   F = [];
+   return;
+end
+
+V = A.VertexData';
+
+% If any of the axes is in log scale, V is normalized to wrt the axes
+% limits,
+V(:) = norm2data(V,A);
+
+if ~isempty(A.VertexIndices) % vertices likely reused on multiple quadrilaterals
+   I = A.VertexIndices;
+   Nf = numel(I)/4; % has to be divisible by 4
+else %every 4 consecutive vertices defines a quadrilateral
+   Nv = size(V,1);
+   Nf = Nv/4;
+   I = 1:Nv;
+end
+F = reshape(I,4,Nf)';
+if ~isempty(A.StripData) % hack workaround
+   F(:) = F(:,[1 2 4 3]);
+end
+try
+   if ~any(all(V==V(1,:))) % not on any Euclidian plane
+      % convert quadrilateral to triangle strips
+      F = [F(:,1:3);F(:,[1 3 4])];
    end
-   
-   if isempty(hs)
-      V = [];
-      F = [];
-   else
-      N = numel(hs);
-      Vc = cell(1,N);
-      Fc = cell(1,N);
-      Ktotal = 0; % total number of vertices
-      for n = 1:N
-         [Vc{n},Fc{n},lcfg] = gethgdata(hs(n),cstyle);
-         % V: kx3, k vertices, each row:[x y z]
-         % F: mxn, m faces, up to n vertices each
-         % lcfg: ix2 cell specifying which object properties to listen to
-         
-         Fc{n} = Fc{n} + Ktotal;
-         Ktotal = Ktotal + size(Vc{n},1);
-         
-         if nargout>2
-            listner_cfg((end+1):(end+size(lcfg,1)),:) = lcfg;
-         end
-         
+catch % if implicit array expansion is not supported (<R2016b)
+   if all(V(:,1)~=V(1,1)) || all(V(:,2)~=V(1,2)) || all(V(:,3)~=V(1,3)) % not on any Euclidian plane
+      % convert quadrilateral to triangle strips
+      F = [F(:,1:3) F(:,[1 3 4])];
+   end
+end
+
+end
+
+function [V,F] = getTriangleStripData(A) % area & contour
+
+if isempty(A)
+   warning('Cannot hatch the face: Graphics object''s face is not defined.');
+   V = [];
+   F = [];
+   return;
+end
+
+V = A.VertexData';
+I = double(A.StripData);
+
+% If any of the axes is in log scale, V is normalized to wrt the axes
+% limits,
+V(:) = norm2data(V,A);
+
+N = numel(I)-1; % # of faces
+m = diff(I);
+M = max(m);
+F = nan(N,M);
+for n = 1:N
+   idx = I(n):(I(n+1)-1);
+   if mod(numel(idx),2) % odd
+      idx(:) = idx([1:2:end end-1:-2:2]);
+   else % even
+      idx(:) = idx([1:2:end-1 end:-2:2]);
+   end
+   F(n,1:numel(idx)) = idx;
+end
+end
+
+% if graphical objects are given normalized to the axes
+function V = norm2data(V,A)
+ax = ancestor(A,'axes');
+inlog = strcmp({ax.XScale ax.YScale ax.ZScale},'log');
+if any(inlog)
+   lims = [ax.XLim(:) ax.YLim(:) ax.ZLim(:)];
+   dirs = strcmp({ax.XDir ax.YDir ax.ZDir},'normal');
+   for n = 1:3 % for each axis
+      if inlog(n)
+         lims(:,n) = log10(lims(:,n));
       end
-      
-      % vertex matrix has all the same number of columns
-      V = cat(1,Vc{:});
-      
-      % face matrix has variable number of columns
-      Ncols = cellfun(@(F)size(F,2),Fc);
-      if ~isscalar(unique(Ncols)) % expand in columns of each first if needed
-         Nmax = max(Ncols);
-         for n = 1:N
-            Fc{n}(:,end+1:Nmax) = nan; % pad with NaNs
-         end
+      V(:,n) = V(:,n)*diff(lims(:,n));
+      if dirs(n)
+         V(:,n) = V(:,n) + lims(1,n);
+      else
+         V(:,n) = lims(2,n) - V(:,n);
       end
-      F = cat(1,Fc{:}); % then concatenate
+      if inlog(n)
+         V(:,n) = 10.^V(:,n);
+      end
    end
 end
 end
@@ -950,7 +638,7 @@ if ishghandle(A,'hggroup')
       A.(pnames{i}) = props.(pnames{i});
    end
    props = rmfield(props,pnames(idx));
-
+   
    h = handle(A.Children);
    for n = 1:numel(h)
       pvalold1 = sethgprops(h(n),props);
@@ -1014,23 +702,23 @@ end
 
 if any(strcmp(styl,{'speckle','outspeckle'}))
    angle = angle*(1-I);
-end;
+end
 
 switch styl
-   case 'single',
-      xydatai = drawhatch(xydata,angle,step,0,offset);
-   case 'cross',
+   case 'single'
+      xydatai = drawhatch(xydata,angle,1/step,0,offset);
+   case 'cross'
       xydatai = [...
-         drawhatch(xydata,angle,step,0,offset) ...
-         drawhatch(xydata,angle+90,step,0,offset)];
-   case 'speckle',
+         drawhatch(xydata,angle,1/step,0,offset) ...
+         drawhatch(xydata,angle+90,1/step,0,offset)];
+   case 'speckle'
       xydatai = [...
-         drawhatch(xydata,45,   step,angle,offset) ...
-         drawhatch(xydata,45+90,step,angle,offset)];
-   case 'outspeckle',
+         drawhatch(xydata,45,   1/step,angle,offset) ...
+         drawhatch(xydata,45+90,1/step,angle,offset)];
+   case 'outspeckle'
       xydatai = [...
-         drawhatch(xydata,45,   step,-angle,offset) ...
-         drawhatch(xydata,45+90,step,-angle,offset)];
+         drawhatch(xydata,45,   1/step,-angle,offset) ...
+         drawhatch(xydata,45+90,1/step,-angle,offset)];
       inside = logical(inpolygon(xydatai(1,:),xydatai(2,:),x,y)); % logical needed for v6!
       xydatai(:,inside) = [];
    otherwise
@@ -1092,8 +780,7 @@ xi = xi(num); yi = yi(num);
 % if this happens an error has occurred somewhere (we have an odd
 % # of points), and the "fix" is not correct, but for speckling anyway
 % it really doesn't make a difference.
-if rem(length(xi),2)==1,
-   disp('mhatch warning');
+if rem(length(xi),2)==1
    xi = [xi; xi(end)];
    yi = [yi; yi(end)];
 end
@@ -1187,20 +874,20 @@ end
 
 % create inputParser for options
 p = inputParser;
-p.addParameter('HatchStyle','single',@ischar);
-p.addParameter('HatchAngle',45,@(v)validateattributes(v,{'numeric'},{'scalar','finite'}));
-p.addParameter('HatchSpacing',5,@(v)validateattributes(v,{'numeric'},{'scalar','positive','finite'}));
-p.addParameter('HatchOffset',0,@(v)validateattributes(v,{'numeric'},{'scalar','nonnegative','<',1}));
+p.addParameter('HatchStyle','single');
+p.addParameter('HatchAngle',45,@(v)validateattributes(v,{'numeric'},{'scalar','finite','real'}));
+p.addParameter('HatchDensity',40,@(v)validateattributes(v,{'numeric'},{'scalar','positive','finite','real'}));
+p.addParameter('HatchSpacing',[],@(v)validateattributes(v,{'numeric'},{'scalar','positive','finite','real'}));
+p.addParameter('HatchOffset',0,@(v)validateattributes(v,{'numeric'},{'scalar','nonnegative','<',1,'real'}));
 p.addParameter('HatchColor','auto',@validatecolor);
-p.addParameter('HatchLineStyle','-',@ischar);
-p.addParameter('HatchLineWidth',0.5,@(v)validateattributes(v,{'numeric'},{'scalar','positive','finite'}));
-p.addParameter('SpeckleWidth',7,@(v)validateattributes(v,{'numeric'},{'scalar','finite'}));
-p.addParameter('SpeckleDensity',1,@(v)validateattributes(v,{'numeric'},{'scalar','positive','finite'}));
-p.addParameter('SpeckleMarkerStyle','.',@ischar);
+p.addParameter('HatchLineStyle','-');
+p.addParameter('HatchLineWidth',0.5,@(v)validateattributes(v,{'numeric'},{'scalar','positive','finite','real'}));
+p.addParameter('SpeckleWidth',7,@(v)validateattributes(v,{'numeric'},{'scalar','finite','real'}));
+p.addParameter('SpeckleDensity',100,@(v)validateattributes(v,{'numeric'},{'scalar','positive','finite','real'}));
+p.addParameter('SpeckleMarkerStyle','.');
 p.addParameter('SpeckleSize',2,@(v)validateattributes(v,{'numeric'},{'scalar','positive','finite'}));
 p.addParameter('SpeckleFillColor','auto',@validatecolor);
-p.addParameter('HatchVisible','auto',@ischar);
-p.addParameter('ContourStyle','nonconvex');
+p.addParameter('HatchVisible','auto');
 
 for n = 1:numel(pnames)
    p.addParameter(pnames{n},[]);
@@ -1219,13 +906,22 @@ for n = 1:numel(rnames)
 end
 
 opts.HatchStyle = validatestring(opts.HatchStyle,patchtypes);
+if any(strcmp(opts.HatchStyle,{'speckle','outspeckle'}))
+   warning('hatchfill2:PartialSupport','Speckle/outspeckle HatchStyle may not work in the current release of hatchfill2')
+end
 if strcmpi(opts.HatchStyle,'none') % For backwards compatability:
    opts.HatchStyle = 'fill';
 end
-opts.HatchLineStyle = validatestring(opts.HatchLineStyle,{'-','--',':','-.'},'hatchfill2','HatchLineStyle');
+opts.HatchLineStyle = validatestring(opts.HatchLineStyle,{'-','--',':','-.'},mfilename,'HatchLineStyle');
+
+if ~isempty(opts.HatchSpacing)
+   warning('HatchSpacing option has been deprecated. Use ''HatchDensity'' option instead.');
+end
+opts = rmfield(opts,'HatchSpacing');
+
 opts.SpeckleMarkerStyle = validatestring(opts.SpeckleMarkerStyle,{'+','o','*','.','x','square','diamond','v','^','>','<','pentagram','hexagram'},'hatchfill2','SpeckleMarkerStyle');
-opts.HatchVisible = validatestring(opts.HatchVisible,{'auto','on','off'},'hatchfill2','HatchVisible');
-opts.ContourStyle = validatestring(opts.ContourStyle,{'convex','nonconvex'});
+opts.HatchVisible = validatestring(opts.HatchVisible,{'auto','on','off'},mfilename,'HatchVisible');
+
 end
 
 function pnames = getcommonprops(h)
@@ -1260,112 +956,140 @@ end
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % axes unit conversion functions
 
-function [x,y] = data2px(ax,x,y,x2px,y2px,islog,xlim,ylim)
+function [V,T,islog] = transform_data(ax,V,ref)
+% convert vertices data to hatch-ready form
+% - if axis is log-scaled, data is converted to their log10 values
+% - if 3D (non-zero z), spatially transform data onto the xy-plane. If
+%   reference point is given, ref is mapped to the origin. Otherwise, ref
+%   is chosen to be the axes midpoint projected onto the patch plane. Along
+%   with the data, the axes corner coordinates are also projected onto the
+%   patch plane to obtain the projected axes limits.
+% - transformed xy-data are then normalized by the projected axes spans.
+
+noZ = size(V,2)==2;
+
+xl = ax.XLim;
+yl = ax.YLim;
+zl = ax.ZLim;
 
 % log to linear space
+islog = strcmp({ax.XScale ax.YScale ax.ZScale},'log');
 if islog(1)
-   x = log10(x);
+   V(:,1) = log10(V(:,1));
+   xl = log10(xl);
+   if ~isempty(ref)
+      ref(1) = log10(ref(1));
+   end
 end
 if islog(2)
-   y = log10(y);
+   V(:,2) = log10(V(:,2));
+   yl = log10(yl);
+   if ~isempty(ref)
+      ref(2) = log10(ref(2));
+   end
 end
-
-% add offsets
-if strcmp(ax.XDir,'normal')
-   x = x - xlim(1);
-else
-   x = xlim(2) - x;
-end
-if strcmp(ax.YDir,'normal')
-   y = y - ylim(1);
-else
-   y = ylim(2) - y;
-end
-
-% pixel origin is (0,0)
-x = x/x2px;
-y = y/y2px;
-end
-
-function [x,y] = px2data(ax,x,y,x2px,y2px,islog,xlim,ylim)
-
-% pixel origin is (0,0)
-x = x*x2px;
-y = y*y2px;
-
-% add offsets
-if strcmp(ax.XDir,'normal')
-   x = x + xlim(1);
-else
-   x = xlim(2) - x;
-end
-if strcmp(ax.YDir,'normal')
-   y = y + ylim(1);
-else
-   y = ylim(2) - y;
-end
-
-% log to linear space
-if islog(1)
-   x = 10.^(x);
-end
-if islog(2)
-   y = 10.^(y);
-end
-end
-
-function [x2px,y2px,islog,xlim,ylim] = data2pxratio(ax)
-%DATA2PXRATIO   Get pixel to axis data unit conversion factors
-%   [AxPos0,X2Px,Y2Px,XLim,YLim] = DATA2PXRATIO(AX) computes the location
-%   of the lower left hand corner of the axis in pixels with respect to the
-%   lower left hand corner of the figure, ratio of unit x-coordinate length
-%   to number of pixels, X2Px, ratio fo the unit y-coodinate length to
-%   number of pixels, Y2Px, and the axes position of AX. In addition, the
-%   limits of x and y axes are returned in XLim and YLim.
-
-islog = strcmp({ax.XScale ax.YScale},'log'); % needs updating
-
-% get the axes position in pixels
-units_bak = ax.Units;  % save the original Units mode
-ax.Units = 'pixels';
-axloc_px = ax.Position;
-ax.Units = units_bak;    % reset to the original Units mode
-
-darIsManual  = strcmp(ax.DataAspectRatioMode,'manual');
-pbarIsManual = strcmp(ax.PlotBoxAspectRatioMode,'manual');
-xlim = ax.XLim; if islog(1), xlim(:) = log10(xlim); end
-ylim = ax.YLim; if islog(2), ylim(:) = log10(ylim); end
-dx = diff(xlim);
-dy = diff(ylim);
-
-if darIsManual || pbarIsManual
-   axisRatio = axloc_px(3)/axloc_px(4);
-   
-   if darIsManual
-      dar = ax.DataAspectRatio;
-      limDarRatio = (dx/dar(1))/(dy/dar(2));
-      if limDarRatio > axisRatio
-         ht = axloc_px(3)/limDarRatio;
-         axloc_px(4) = ht;
-      else
-         wd = axloc_px(4) * limDarRatio;
-         axloc_px(3) = wd;
-      end
-   else%if pbarIsManual
-      pbar = ax.PlotBoxAspectRatio;
-      pbarRatio = pbar(1)/pbar(2);
-      if pbarRatio > axisRatio
-         ht = axloc_px(3)/pbarRatio;
-         axloc_px(4) = ht;
-      else
-         wd = axloc_px(4) * pbarRatio;
-         axloc_px(3) = wd;
-      end
+if islog(3) && ~noZ
+   V(:,3) = log10(V(:,3));
+   zl = log10(zl);
+   if ~isempty(ref)
+      ref(3) = log10(ref(3));
    end
 end
 
-% convert to data unit
-x2px = dx/axloc_px(3);
-y2px = dy/axloc_px(4);
+if noZ
+   V(:,3) = 0;
+end
+
+% if not given, pick the reference point to be the mid-point of the current
+% axes
+if isempty(ref)
+   ref = [mean(xl) mean(yl) mean(zl)];
+end
+
+% normalize the axes so that they span = 1;
+Tscale = makehgtform('scale', [1/diff(xl) 1/diff(yl) 1/diff(zl)]);
+V(:) = V*Tscale(1:3,1:3);
+ref(:) = ref*Tscale(1:3,1:3);
+
+% obtain unique vertices
+Vq = double(unique(V,'rows')); % find unique points (sorted order)
+Nq = size(Vq,1);
+if Nq<3 || any(isinf(Vq(:))) || any(isnan(Vq(:))) % not hatchable
+   V = [];
+   T = [];
+   return;
+end
+
+try % erros if 2D object
+   zq = unique(Vq(:,3));
+catch
+   V(:,3) = 0;
+   zq = 0;
+end
+T = eye(4);
+if isscalar(zq) % patch is on a xy-plane
+   if zq~=0 % not on the xy-plane
+      T = makehgtform('translate',[0 0 -zq]);
+   end
+else
+   % if patch is not on a same xy-plane
+   
+   % use 3 points likely well separated
+   idx = round((0:2)/2*(Nq-1))+1;
+   
+   % find unit normal vector of the patch plane
+   norm = cross(Vq(idx(1),:)-Vq(idx(3),:),Vq(idx(2),:)-Vq(idx(3),:)); % normal vector
+   norm(:) = norm/sqrt(sum(norm.^2));
+   
+   % define the spatial rotation
+   theta = acos(norm(3));
+   if theta>pi/2, theta = theta-pi; end
+   u = [norm(2) -norm(1) 0];
+   Trot = makehgtform('axisrotate',u,theta);
+   
+   % project the reference point onto the plane
+   P = norm.'*norm;
+   ref_proj = ref*(eye(3) - P) + Vq(1,:)*P;
+   if norm(3)
+      T = makehgtform('translate', -ref_proj); % user specified reference point or -d/norm(3) for z-crossing
+   end
+   
+   % apply the rotation now
+   T(:) = Trot*T;
+   
+   % find the axes limits on the transformed space
+   %    [Xlims,Ylims,Zlims] = ndgrid(xl,yl,zl);
+   %    Vlims = [Xlims(:) Ylims(:) Zlims(:)];
+   %    Vlims_proj = [Vlims ones(8,1)]*T';
+   %    lims_proj = [min(Vlims_proj(:,[1 2]),[],1);max(Vlims_proj(:,[1 2]),[],1)];
+   %    xl = lims_proj(:,1)';
+   %    yl = lims_proj(:,2)';
+end
+
+% perform the transformation
+V(:,4) = 1;
+V = V*T';
+V(:,[3 4]) = [];
+
+T(:) = T*Tscale;
+
+end
+
+function V = revert_data(V,T,islog)
+
+N = size(V,1);
+V = [V zeros(N,1) ones(N,1)]/T';
+V(:,end) = [];
+
+% log to linear space
+if islog(1)
+   V(:,1) = 10.^(V(:,1));
+end
+if islog(2)
+   V(:,2) = 10.^(V(:,2));
+end
+if islog(3)
+   V(:,3) = 10.^(V(:,3));
+end
 
 end
