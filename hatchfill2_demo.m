@@ -53,15 +53,17 @@ c = load('count.dat');
 Y = c(1:6,:);
 figure;
 hp = bar(Y);
-hatchfill2(hp(1),'single','HatchAngle',0);
-hatchfill2(hp(2),'cross','HatchAngle',45);
-hatchfill2(hp(3),'single','HatchAngle',90);
+hh = [hatchfill2(hp(1),'single','HatchAngle',0)
+hatchfill2(hp(2),'cross','HatchAngle',45)
+hatchfill2(hp(3),'single','HatchAngle',90)];
 title('Example 4: Hatching bars of a bar plot');
 
 % Example 5: 3D hatching
 t = linspace(0,3,101)';
 x = cos(2*pi*t);
 y = sin(2*pi*t);
+
+figure;
 plot3(t,x,y)
 
 %REAL PROJECTION

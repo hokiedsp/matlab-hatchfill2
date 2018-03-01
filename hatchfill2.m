@@ -58,6 +58,8 @@ function H = hatchfill2(A,varargin)
 
 % Copyright 2015-2018 Takeshi Ikuma
 % History:
+% rev. 8 : 
+%   * Hatch lines LegendDisplay properties set to 'off'
 % rev. 7 : (01-10-2018)
 %   * Added support for 3D faces
 %   * Removed HatchSpacing option
@@ -95,26 +97,21 @@ function H = hatchfill2(A,varargin)
 %     Iram Weinstein.
 
 narginchk(1,inf);
+
+% hatchfill2 legend
+% hatchfill2(ax,'legend')
+% get(gca,'legend')
+
 [A,opts,props] = parse_input(A,varargin);
 
 drawnow % make sure the base objects are already drawn
 
-if verLessThan('matlab','8.4')
-   H = cell(1,numel(A));
-else
-   H = repmat({matlab.graphics.GraphicsPlaceholder},1,numel(A));
-end
+H = repmat({matlab.graphics.GraphicsPlaceholder},1,numel(A));
 for n = 1:numel(A)
    H{n} = newhatch(A(n),opts,props);
    
-   % if legend of A(n) is shown, add hatching to it as well
-   %    leg = handle(legend(ancestor(A,'axes')));
-   %    hsrc = [leg.EntryContainer.Children.Object];
-   %    hlc = leg.EntryContainer.Children(find(hsrc==A(n),1));
-   %    if ~isempty(hlc)
-   %       hlc = hlc.Children(1); % LegendIcon object
-   %       get(hlc.Children(1))
-   %    end
+   % if legend is already shown, add hatching to it
+   hatch_legend(A(n))
 end
 
 if nargout==0
@@ -197,7 +194,13 @@ try
    [X,Y,Z] = computeHatchData(handle(ancestor(A,'axes')),V,F,opts);
    
    % 6. plot the hatching line
-   commonprops = {'Parent',A.Parent,'DisplayName',A.DisplayName,'Visible',vis};
+   P = ancestor(A,'matlab.graphics.illustration.Legend');
+   if isempty(P)
+      P = A.Parent;
+   else
+      P = P.DecorationContainer;
+   end
+   commonprops = {'Parent',P,'DisplayName',A.DisplayName,'Visible',vis,'LegendDisplay','off'};
    if ~strcmp(opts.HatchColor,'auto')
       commonprops = [commonprops {'Color',opts.HatchColor,'MarkerFaceColor',opts.HatchColor}];
    end
@@ -246,8 +249,7 @@ try
    lis = [
       addlistener(A,'Reparent',@objReparent)
       addlistener(A,'ObjectBeingDestroyed',@objBeingDeleted);
-      addlistener(A,'MarkedClean',@objMarkedClean)
-      addlistener(A,'LegendEntryDirty',@(h,evt)[])]; % <- study this later
+      addlistener(A,'MarkedClean',@objMarkedClean)]; % <- study this later
    
    syncprops = {'Clipping','HitTest','Interruptible','BusyAction','UIContextMenu'};
    syncprops(~cellfun(@(p)isprop(A,p),syncprops)) = [];
@@ -1092,4 +1094,27 @@ if islog(3)
    V(:,3) = 10.^(V(:,3));
 end
 
+end
+
+function hatch_legend(A)
+% apply hatching to a legend
+% A - hatched object (scalar)
+
+ax = ancestor(A,'axes'); % parent axes of the hatched object
+H = getappdata(A,'HatchFill2Obj'); % hatching line object
+Hleg = ax.Legend;
+if isempty(Hleg) || isempty(H)
+   % no action if legend isn't created yet
+   return;
+end
+
+tf = Hleg.PlotChildren == A; % logical index of the 
+if ~any(tf)
+   % no action if legend does not contain the object
+   return;
+end
+
+% hatching target: Hleg.EntryContainer.Children(tf).Children(3)
+% build to be a child of Hleg.DecorationContainer
+% Hleg.EntryContainer.Children(tf).Children(1).Transform.Children.NodeChildren(2).VertexData
 end
